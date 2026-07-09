@@ -1,0 +1,10 @@
+{
+    "list": [
+        "example/Counter-Strike",
+        "example/Xonotic",
+        "example/Minecraft",
+        "example/AoEII",
+        "example/WCIII"
+    ],
+    "address": "127.0.0.1"
+}
