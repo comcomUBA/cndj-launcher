@@ -12,21 +12,7 @@ const DATA_LOGO: &[u8] = include_bytes!("../asset/logo.png");
 const DATA_FONT: &[u8] = include_bytes!("../asset/font.ttf");
 const MAIN_COLOR: Color = Color::new(33, 150, 243, 255);
 
-#[derive(Serialize, Deserialize)]
-struct Meta {
-    list: Vec<String>,
-    address: String,
-}
-
-impl Meta {
-    const FILE_PATH: &str = "launcher.json";
-
-    fn new() -> anyhow::Result<Self> {
-        Ok(serde_json::from_str(&std::fs::read_to_string(
-            Self::FILE_PATH,
-        )?)?)
-    }
-}
+//================================================================
 
 fn main() {
     if let Err(error) = run() {
@@ -51,8 +37,8 @@ fn run() -> anyhow::Result<()> {
     let exit = load_texture_raw(&mut handle, &thread, DATA_EXIT.to_vec())?;
     let icon = load_texture_raw(&mut handle, &thread, DATA_ICON.to_vec())?;
     let logo = load_texture_raw(&mut handle, &thread, DATA_LOGO.to_vec())?;
-    let font = get_font(&mut handle, &thread)?;
-    let mut game_list = get_game_list(&mut handle, &thread, &meta)?;
+    let font = load_font(&mut handle, &thread)?;
+    let mut game_list = meta.get_game_list(&mut handle, &thread)?;
     let mut game_name = String::new();
     let mut game_name_fail = 0.0;
 
@@ -146,6 +132,176 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+//================================================================
+
+#[derive(Serialize, Deserialize)]
+struct Meta {
+    list: Vec<String>,
+    address: String,
+}
+
+impl Meta {
+    const FILE_PATH: &str = "launcher.json";
+
+    fn new() -> anyhow::Result<Self> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(
+            Self::FILE_PATH,
+        )?)?)
+    }
+
+    fn get_game_list(
+        &self,
+        handle: &mut RaylibHandle,
+        thread: &RaylibThread,
+    ) -> anyhow::Result<Vec<Game>> {
+        let mut list = Vec::new();
+
+        for game in &self.list {
+            list.push(Game::new(
+                game.to_string(),
+                load_texture(handle, thread, &format!("{}/launcher_hero.png", game))?,
+                load_texture(handle, thread, &format!("{}/launcher_logo.png", game))?,
+            ));
+        }
+
+        Ok(list)
+    }
+}
+
+//================================================================
+
+struct Game {
+    path: String,
+    hero: Texture2D,
+    logo: Texture2D,
+    hover: f32,
+    flash: f32,
+}
+
+impl Game {
+    fn new(path: String, hero: Texture2D, logo: Texture2D) -> Self {
+        Self {
+            path,
+            hero,
+            logo,
+            hover: 0.0,
+            flash: 0.0,
+        }
+    }
+
+    fn draw(&mut self, draw: &mut RaylibDrawHandle, meta: &Meta, i: f32) -> bool {
+        let mouse = draw.get_mouse_position();
+        let click = draw.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+        let frame = draw.get_frame_time();
+        let screen_size = SCREEN_SIZE.1 - 64.0 * 2.0;
+
+        let scale_hero = Vector2::new(self.hero.width as f32, screen_size / meta.list.len() as f32);
+        let scale_logo = Vector2::new(self.logo.width as f32, self.logo.height as f32);
+        let hover = ease_out(self.hover);
+
+        let time = draw.get_time() as f32;
+        let time = ease_out((1.0 - (time - 0.5).max(0.0)).max(0.0));
+        let time = if i as i32 % 2 == 0 { time } else { -time };
+
+        let point = Vector2::new(scale_hero.x * time, 64.0 + scale_hero.y * i);
+        let shape = Rectangle::new(point.x, point.y, scale_hero.x, scale_hero.y);
+        let color = Color::WHITE.lerp(Color::BLACK, 0.5 - (hover * 0.5));
+        let zoom_h = 1.0 - hover * 0.1;
+        let zoom_l = 1.0 + hover * 0.1;
+        let interact = shape.check_collision_point_rec(mouse) && click;
+
+        if shape.check_collision_point_rec(mouse) {
+            self.hover += frame * 5.0;
+        } else {
+            self.hover -= frame * 5.0;
+        }
+
+        self.hover = self.hover.clamp(0.0, 1.0);
+
+        if interact {
+            self.flash = 1.0;
+        }
+
+        self.flash = (self.flash - draw.get_frame_time()).max(0.0);
+
+        draw.draw_texture_pro(
+            &self.hero,
+            Rectangle::new(
+                (scale_hero.x - scale_hero.x * zoom_h) * 0.5,
+                (scale_hero.y - scale_hero.y * zoom_h) * 0.5
+                    + (self.hero.height as f32 - scale_hero.y).max(0.0) * 0.5,
+                scale_hero.x * zoom_h,
+                scale_hero.y * zoom_h,
+            ),
+            shape,
+            Vector2::ZERO,
+            0.0,
+            color,
+        );
+        draw.draw_texture_pro(
+            &self.logo,
+            Rectangle::new(0.0, 0.0, scale_logo.x, scale_logo.y),
+            Rectangle::new(
+                point.x + (scale_hero.x - scale_logo.x * zoom_l) * 0.5,
+                point.y + (scale_hero.y - scale_logo.y * zoom_l) * 0.5,
+                scale_logo.x * zoom_l,
+                scale_logo.y * zoom_l,
+            ),
+            Vector2::ZERO,
+            0.0,
+            color,
+        );
+        draw.draw_rectangle_rec(shape, Color::WHITE.alpha(self.flash * 0.5));
+
+        interact
+    }
+}
+
+//================================================================
+
+fn ease_out(x: f32) -> f32 {
+    if x < 0.5 {
+        2.0 * x * x
+    } else {
+        1.0 - (-2.0 * x + 2.0).powf(2.0) / 2.0
+    }
+}
+
+fn point_in_triangle(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool {
+    let ab = Vector2::new(b.x - a.x, b.y - a.y).cross(Vector2::new(p.x - a.x, p.y - a.y));
+    let bc = Vector2::new(c.x - b.x, c.y - b.y).cross(Vector2::new(p.x - b.x, p.y - b.y));
+    let ca = Vector2::new(a.x - c.x, a.y - c.y).cross(Vector2::new(p.x - c.x, p.y - c.y));
+
+    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+}
+
+fn load_texture_raw(
+    handle: &mut RaylibHandle,
+    thread: &RaylibThread,
+    data: Vec<u8>,
+) -> anyhow::Result<Texture2D> {
+    let image = Image::load_image_from_mem(".png", &data)?;
+    let mut image = handle.load_texture_from_image(thread, &image)?;
+    image.set_texture_filter(thread, TextureFilter::TEXTURE_FILTER_TRILINEAR);
+    image.gen_texture_mipmaps();
+    Ok(image)
+}
+
+fn load_texture(
+    handle: &mut RaylibHandle,
+    thread: &RaylibThread,
+    path: &str,
+) -> anyhow::Result<Texture2D> {
+    let mut image = handle.load_texture(thread, path)?;
+    image.set_texture_filter(thread, TextureFilter::TEXTURE_FILTER_TRILINEAR);
+    image.gen_texture_mipmaps();
+    Ok(image)
+}
+
+fn load_font(handle: &mut RaylibHandle, thread: &RaylibThread) -> anyhow::Result<Font> {
+    Ok(handle.load_font_from_memory(thread, ".ttf", DATA_FONT, 6 * 9, None)?)
+}
+
 fn draw_text_edit(draw: &mut RaylibDrawHandle, font: &Font, name: &mut String, color: Color) {
     if let Some(character) = draw.get_char_pressed() {
         name.push(character);
@@ -189,152 +345,4 @@ fn draw_text_edit(draw: &mut RaylibDrawHandle, font: &Font, name: &mut String, c
         0.0,
         Color::BLACK,
     );
-}
-
-fn ease_out(x: f32) -> f32 {
-    if x < 0.5 {
-        2.0 * x * x
-    } else {
-        1.0 - (-2.0 * x + 2.0).powf(2.0) / 2.0
-    }
-}
-
-fn point_in_triangle(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool {
-    let ab = Vector2::new(b.x - a.x, b.y - a.y).cross(Vector2::new(p.x - a.x, p.y - a.y));
-    let bc = Vector2::new(c.x - b.x, c.y - b.y).cross(Vector2::new(p.x - b.x, p.y - b.y));
-    let ca = Vector2::new(a.x - c.x, a.y - c.y).cross(Vector2::new(p.x - c.x, p.y - c.y));
-
-    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
-}
-
-fn load_texture_raw(
-    handle: &mut RaylibHandle,
-    thread: &RaylibThread,
-    data: Vec<u8>,
-) -> anyhow::Result<Texture2D> {
-    let image = Image::load_image_from_mem(".png", &data)?;
-    let mut image = handle.load_texture_from_image(thread, &image)?;
-    image.set_texture_filter(&thread, TextureFilter::TEXTURE_FILTER_TRILINEAR);
-    image.gen_texture_mipmaps();
-    Ok(image)
-}
-
-fn load_texture(
-    handle: &mut RaylibHandle,
-    thread: &RaylibThread,
-    path: &str,
-) -> anyhow::Result<Texture2D> {
-    let mut image = handle.load_texture(&thread, path)?;
-    image.set_texture_filter(&thread, TextureFilter::TEXTURE_FILTER_TRILINEAR);
-    image.gen_texture_mipmaps();
-    Ok(image)
-}
-
-fn get_font(handle: &mut RaylibHandle, thread: &RaylibThread) -> anyhow::Result<Font> {
-    Ok(handle.load_font_from_memory(&thread, ".ttf", DATA_FONT, 6 * 9, None)?)
-}
-
-fn get_game_list(
-    handle: &mut RaylibHandle,
-    thread: &RaylibThread,
-    meta: &Meta,
-) -> anyhow::Result<Vec<Game>> {
-    let mut list = Vec::new();
-
-    for game in &meta.list {
-        list.push(Game::new(
-            game.to_string(),
-            load_texture(handle, thread, &format!("{}/launcher_hero.png", game))?,
-            load_texture(handle, thread, &format!("{}/launcher_logo.png", game))?,
-        ));
-    }
-
-    Ok(list)
-}
-
-struct Game {
-    path: String,
-    hero: Texture2D,
-    logo: Texture2D,
-    hover: f32,
-    flash: f32,
-}
-
-impl Game {
-    fn new(path: String, hero: Texture2D, logo: Texture2D) -> Self {
-        Self {
-            path,
-            hero,
-            logo,
-            hover: 0.0,
-            flash: 0.0,
-        }
-    }
-
-    fn draw(&mut self, draw: &mut RaylibDrawHandle, meta: &Meta, i: f32) -> bool {
-        let mouse = draw.get_mouse_position();
-        let click = draw.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
-        let frame = draw.get_frame_time();
-        let screen_size = SCREEN_SIZE.1 - 64.0 * 2.0;
-
-        let scale_hero = Vector2::new(self.hero.width as f32, screen_size / meta.list.len() as f32);
-        let scale_logo = Vector2::new(self.logo.width as f32, self.logo.height as f32);
-        let hover = ease_out(self.hover);
-
-        let time = draw.get_time() as f32;
-        let time = ease_out((1.0 - (time - 0.5).max(0.0)).max(0.0));
-        let time = if i as i32 % 2 == 0 { time } else { -time };
-
-        let point = Vector2::new(scale_hero.x * time, 64.0 + scale_hero.y * i);
-        let shape = Rectangle::new(point.x, point.y, scale_hero.x, scale_hero.y);
-        let color = Color::WHITE.lerp(Color::BLACK, 0.5 - (hover * 0.5));
-        let zoom_h = 1.0 - hover * 0.1;
-        let zoom_l = 1.0 + hover * 0.1;
-        let interact = shape.check_collision_point_rec(mouse) && click;
-
-        if shape.check_collision_point_rec(mouse) {
-            self.hover += frame * 4.0;
-        } else {
-            self.hover -= frame * 2.0;
-        }
-
-        self.hover = self.hover.clamp(0.0, 1.0);
-
-        if interact {
-            self.flash = 1.0;
-        }
-
-        self.flash = (self.flash - draw.get_frame_time()).max(0.0);
-
-        draw.draw_texture_pro(
-            &self.hero,
-            Rectangle::new(
-                (scale_hero.x - scale_hero.x * zoom_h) * 0.5,
-                (scale_hero.y - scale_hero.y * zoom_h) * 0.5
-                    + (self.hero.height as f32 - scale_hero.y).max(0.0) * 0.5,
-                scale_hero.x * zoom_h,
-                scale_hero.y * zoom_h,
-            ),
-            shape,
-            Vector2::ZERO,
-            0.0,
-            color,
-        );
-        draw.draw_texture_pro(
-            &self.logo,
-            Rectangle::new(0.0, 0.0, scale_logo.x, scale_logo.y),
-            Rectangle::new(
-                point.x + (scale_hero.x - scale_logo.x * zoom_l) * 0.5,
-                point.y + (scale_hero.y - scale_logo.y * zoom_l) * 0.5,
-                scale_logo.x * zoom_l,
-                scale_logo.y * zoom_l,
-            ),
-            Vector2::ZERO,
-            0.0,
-            color,
-        );
-        draw.draw_rectangle_rec(shape, Color::WHITE.alpha(self.flash * 0.5));
-
-        interact
-    }
 }
