@@ -6,9 +6,10 @@ use std::{env::set_current_dir, process::Command};
 //================================================================
 
 const SCREEN_SIZE: (f32, f32) = (1024.0, 800.0);
-const ICON_EXIT: &[u8] = include_bytes!("../asset/exit.png");
-const ICON_LOGO: &[u8] = include_bytes!("../asset/logo.png");
-const FONT_DATA: &[u8] = include_bytes!("../asset/font.ttf");
+const DATA_EXIT: &[u8] = include_bytes!("../asset/exit.png");
+const DATA_ICON: &[u8] = include_bytes!("../asset/icon.png");
+const DATA_LOGO: &[u8] = include_bytes!("../asset/logo.png");
+const DATA_FONT: &[u8] = include_bytes!("../asset/font.ttf");
 const MAIN_COLOR: Color = Color::new(33, 150, 243, 255);
 
 #[derive(Serialize, Deserialize)]
@@ -47,14 +48,16 @@ fn run() -> anyhow::Result<()> {
         .build();
 
     let meta = Meta::new()?;
-    let exit = load_texture_raw(&mut handle, &thread, ICON_EXIT.to_vec())?;
-    let logo = load_texture_raw(&mut handle, &thread, ICON_LOGO.to_vec())?;
+    let exit = load_texture_raw(&mut handle, &thread, DATA_EXIT.to_vec())?;
+    let icon = load_texture_raw(&mut handle, &thread, DATA_ICON.to_vec())?;
+    let logo = load_texture_raw(&mut handle, &thread, DATA_LOGO.to_vec())?;
     let font = get_font(&mut handle, &thread)?;
     let mut game_list = get_game_list(&mut handle, &thread, &meta)?;
     let mut game_name = String::new();
     let mut game_name_fail = 0.0;
 
     handle.set_target_fps(60);
+    handle.set_window_icon(icon.load_image()?);
 
     while !handle.window_should_close() {
         let mut draw = handle.begin_drawing(&thread);
@@ -152,7 +155,7 @@ fn draw_text_edit(draw: &mut RaylibDrawHandle, font: &Font, name: &mut String, c
         name.pop();
     }
 
-    let alpha = ((draw.get_time() as f32 * 4.0).sin() + 1.0) / 2.0;
+    let alpha = ((draw.get_time() as f32 * 8.0).sin() + 1.0) / 2.0;
     let shift = font.measure_text(name, 6.0 * 9.0, 0.0);
 
     draw.draw_text_ex(
@@ -228,7 +231,7 @@ fn load_texture(
 }
 
 fn get_font(handle: &mut RaylibHandle, thread: &RaylibThread) -> anyhow::Result<Font> {
-    Ok(handle.load_font_from_memory(&thread, ".ttf", FONT_DATA, 6 * 9, None)?)
+    Ok(handle.load_font_from_memory(&thread, ".ttf", DATA_FONT, 6 * 9, None)?)
 }
 
 fn get_game_list(
@@ -254,6 +257,7 @@ struct Game {
     hero: Texture2D,
     logo: Texture2D,
     hover: f32,
+    flash: f32,
 }
 
 impl Game {
@@ -263,6 +267,7 @@ impl Game {
             hero,
             logo,
             hover: 0.0,
+            flash: 0.0,
         }
     }
 
@@ -275,11 +280,17 @@ impl Game {
         let scale_hero = Vector2::new(self.hero.width as f32, screen_size / meta.list.len() as f32);
         let scale_logo = Vector2::new(self.logo.width as f32, self.logo.height as f32);
         let hover = ease_out(self.hover);
-        let point = Vector2::new(0.0, 64.0 + scale_hero.y * i);
+
+        let time = draw.get_time() as f32;
+        let time = ease_out((1.0 - (time - 0.5).max(0.0)).max(0.0));
+        let time = if i as i32 % 2 == 0 { time } else { -time };
+
+        let point = Vector2::new(scale_hero.x * time, 64.0 + scale_hero.y * i);
         let shape = Rectangle::new(point.x, point.y, scale_hero.x, scale_hero.y);
         let color = Color::WHITE.lerp(Color::BLACK, 0.5 - (hover * 0.5));
         let zoom_h = 1.0 - hover * 0.1;
         let zoom_l = 1.0 + hover * 0.1;
+        let interact = shape.check_collision_point_rec(mouse) && click;
 
         if shape.check_collision_point_rec(mouse) {
             self.hover += frame * 4.0;
@@ -288,6 +299,12 @@ impl Game {
         }
 
         self.hover = self.hover.clamp(0.0, 1.0);
+
+        if interact {
+            self.flash = 1.0;
+        }
+
+        self.flash = (self.flash - draw.get_frame_time()).max(0.0);
 
         draw.draw_texture_pro(
             &self.hero,
@@ -316,7 +333,8 @@ impl Game {
             0.0,
             color,
         );
+        draw.draw_rectangle_rec(shape, Color::WHITE.alpha(self.flash * 0.5));
 
-        shape.check_collision_point_rec(mouse) && click
+        interact
     }
 }
